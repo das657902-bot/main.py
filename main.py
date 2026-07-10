@@ -24,7 +24,7 @@ def keep_alive():
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # ==================== ২. বটের মূল কনফিগারেশন ====================
-BOT_TOKEN = "8517425191:AAEMDKiXmmCbVZYng76YkCQ5vR7Ncy9NiAM"  # আপনার বটের টোকেন
+BOT_TOKEN = "8955870337:AAE9yODdtPTVWeMlleiO_u2MjoBmWQjbmOk"  # আপনার বটের টোকেন
 ADMIN_IDS = [8051276654]  # আপনার টেলিগ্রাম আইডি
 
 # ==================== ৩. ডাটাবেজ সেটআপ ====================
