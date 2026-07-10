@@ -15,7 +15,9 @@ def run_server(): server.run(host='0.0.0.0', port=8080)
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# ==================== কনফিগারেশন ===================="8517425191:AAE6-VcxO5c8o9eDZr_XqJ2JOVptXfPmIQA"  # ⚠️ আপনার বটের আসল টোকেন দিন
+# ==================== কনফিগারেশন ===================="8517425191:AAEMDKiXmmCbVZYng76YkCQ5vR7Ncy9
+
+NIAM"  # ⚠️ আপনার বটের আসল টোকেন দিন
 ADMIN_IDS = [8051276654]  # ⚠️ আপনার সঠিক অ্যাডমিন আইডি দিন
 # ===================================================
 
