@@ -1,298 +1,267 @@
-import logging
-import requests
+import os
 import sqlite3
-import re
+import logging
+import asyncio
 from threading import Thread
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# Render-এ ২৪ ঘণ্টা সচল রাখার ওয়েব সার্ভার
-server = Flask('')
-@server.route('/')
-def home(): return "Supreme Multi-Panel & User OTP Bot is Running 24/7!"
-def run_server(): server.run(host='0.0.0.0', port=8080)
+# ==================== ১. ক্লাউডে ২৪/৭ রাখার ওয়েব সার্ভার ====================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Ultra OTP Bot with Fixed IDs & Advanced Demo Panel is Running!"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# ==================== কনফিগারেশন ===================="8517425191:AAEMDKiXmmCbVZYng76YkCQ5vR7Ncy9
+# ==================== ২. বটের মূল কনফিগারেশন ====================
+BOT_TOKEN = "8517425191:AAEMDKiXmmCbVZYng76YkCQ5vR7Ncy9"  # আপনার বটের টোকেন
+ADMIN_IDS = [805127634]  # আপনার টেলিগ্রাম আইডি
 
-NIAM"  # ⚠️ আপনার বটের আসল টোকেন দিন
-ADMIN_IDS = [8051276654]  # ⚠️ আপনার সঠিক অ্যাডমিন আইডি দিন
-# ===================================================
+# ==================== ৩. ডাটাবেজ সেটআপ ====================
+conn = sqlite3.connect('master_otp.db', check_same_thread=False)
+cursor = conn.cursor()
 
-# 🗄️ ডাটাবেস তৈরি ও টেবিল সেটআপ
-def init_db():
-    conn = sqlite3.connect('master_otp.db')
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS panels 
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, token TEXT, username TEXT, password TEXT, type TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS manual_numbers 
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT, service TEXT, country TEXT, status TEXT DEFAULT 'AVAILABLE', otp TEXT DEFAULT '')''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, lang TEXT DEFAULT 'en')''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
-    # ডিফল্ট চ্যানেল লক সেটিংস
-    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('channels', '@tuotpbackup, @TechUniverseBackup')")
-    conn.commit()
-    conn.close()
+cursor.execute('''CREATE TABLE IF NOT EXISTS user_stats 
+                  (user_id INTEGER PRIMARY KEY, total_numbers INTEGER DEFAULT 0, total_otps INTEGER DEFAULT 0)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, lang TEXT DEFAULT 'en')''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
+conn.commit()
 
-init_db()
+# ⚙️ আপনার দেওয়া ৩টি চ্যানেল/গ্রুপের আইডি ও লিংক এখানে নিখুঁতভাবে সেট করা হয়েছে
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ch1_id', '-1003436812983')") # মেইন চ্যানেল আইডি
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ch1_link', 'https://t.me/facboo578')")
 
-admin_state = {}
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ch2_id', '-1002797517003')") # ব্যাকআপ চ্যানেল আইডি
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ch2_link', 'https://t.me/gsjggj98')")
 
-# 🌐 ভাষা অনুযায়ী ডিকশনারি (হুবহু আপনার স্ক্রিনশটের টেক্সট)
-STRINGS = {
-    "en": {
-        "welcome": "👋 *Welcome to our Bot!*\n📲 Instantly receive Telegram, WhatsApp, Facebook, Google OTP code using virtual numbers.\n\n🌐 *Please select your language:*",
-        "lock": "⚠️ *Please join all required channels first!*\nBot access is locked until you join all channels.",
-        "joined_success": "✅ Successfully authorized! Welcome to the main menu.",
-        "select_country": "🌍 *PLEASE SELECT A COUNTRY / SERVICE:*",
-        "active_num": "📊 You currently have no active numbers.",
-        "kb_get_num": "📞 Get Number",
-        "kb_active": "📊 Active Numbers",
-        "kb_lang": "🌐 Change Language"
-    },
-    "ar": {
-        "welcome": "👋 *مرحباً بك في البوت الخاص بنا!*\n📲 احصل على أكواد OTP الفورية لتليجرام، واتساب، فيسبوك، وجوجل باستخدام أرقام وهمية.\n\n🌐 *يرجى اختيار اللغة الخاصة بك:*",
-        "lock": "⚠️ *رجاءً قم بالانضمام إلى جميع القنوات المطلوبة أولاً!*\nالدخول للبوت مغلق حتى تنضم للقنوات.",
-        "joined_success": "✅ تم التحقق بنجاح! مرحباً بك في القائمة الرئيسية.",
-        "select_country": "🌍 *رجاءً اختر الدولة / الخدمة:*",
-        "no_stock": "❌ لا يوجد مخزون حالياً!",
-        "active_num": "📊 ليس لديك أي أرقام نشطة حالياً.",
-        "kb_get_num": "📞 الحصول على رقم",
-        "kb_active": "📊 الأرقام النشطة",
-        "kb_lang": "🌐 تغيير اللغة"
-    }
-}
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ch3_id', '-1002414484554')") # ওটিপি গ্রুপ আইডিকে ৩ নম্বর লক হিসেবে রাখা হলো
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ch3_link', 'https://t.me/gjifch743')")
 
-# ডাটাবেস থেকে চ্যানেল লক ডেটা আনা
-def get_required_channels():
-    conn = sqlite3.connect('master_otp.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE key='channels'")
-    row = cursor.fetchone()
-    conn.close()
-    if row and row[0]:
-        return [ch.strip() for ch in row[0].split(",") if ch.strip()]
-    return []
+# 📢 ওটিপি প্রুফ শেয়ার করার জন্য আপনার ওটিপি গ্রুপের আইডি সেট করা হলো
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('otp_share_group', '-1002414484554')") 
+conn.commit()
 
-# ইউজার চ্যানেলগুলোতে জয়েন আছে কিনা চেক করা
-async def is_user_subscribed(bot, user_id):
+# Temporary storage for Admin Demo Session
+admin_demo_data = {}
+
+# ==================== ৪. নাম্বারের কান্ট্রি কোড ও লাস্ট ৪ ডিজিট মাস্কিং ফাংশন ====================
+def mask_number(phone_number, country_code_str="🌍"):
+    clean_num = phone_number.replace("+", "").replace(" ", "").strip()
+    last_four = clean_num[-4:] if len(clean_num) >= 4 else clean_num
+    return f"{country_code_str} XXXX {last_four}"
+
+def get_service_header(service_name):
+    srv = service_name.lower().strip()
+    if "facebook" in srv or "fb" == srv: return "🔵 **FACEBOOK OTP RECEIVED** 🔵"
+    elif "instagram" in srv or "ig" == srv: return "📸 **INSTAGRAM OTP RECEIVED** 📸"
+    elif "telegram" in srv or "tg" == srv: return "✈️ **TELEGRAM OTP RECEIVED** ✈️"
+    elif "whatsapp" in srv or "wa" == srv: return "🟢 **WHATSAPP OTP RECEIVED** 🟢"
+    else: return f"📩 **{service_name.upper()} OTP RECEIVED** 📩"
+
+# ==================== ৫. ৩টি চ্যানেল লক চেকিং ফাংশন (আইডি বেসড) ====================
+async def is_subscribed_all(user_id, context):
     if user_id in ADMIN_IDS: return True
-    channels = get_required_channels()
-    for channel in channels:
-        try:
-            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
-            if member.status in ['left', 'kicked']: return False
-        except: return False
+    cursor.execute("SELECT value FROM settings WHERE key IN ('ch1_id', 'ch2_id', 'ch3_id')")
+    results = cursor.fetchall()
+    for res in results:
+        ch = res[0].strip()
+        if ch:
+            try:
+                # এখানে ইন্টিজারে রূপান্তর করে প্রাইভেট চ্যাট আইডি চেক করা হচ্ছে
+                member = await context.bot.get_chat_member(chat_id=int(ch), user_id=user_id)
+                if member.status in ['left', 'kicked']: return False
+            except Exception: return False
     return True
 
-# ইউজার মেইন রিপ্লাই কিবোর্ড
-def get_main_keyboard(lang):
-    kb = [
-        [STRINGS[lang]["kb_get_num"], STRINGS[lang]["kb_active"]],
-        [STRINGS[lang]["kb_lang"]]
-    ]
-    return ReplyKeyboardMarkup(kb, resize_keyboard=True)
-
-# 👑 অ্যাডমিন কন্ট্রোল প্যানেল কিবোর্ড
-def get_admin_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("🔗 নতুন API প্যানেল যোগ", callback_data="adm_add_api")],
-        [InlineKeyboardButton("🔑 নতুন ID-Pass প্যানেল যোগ", callback_data="adm_add_login")],
-        [InlineKeyboardButton("📱 নিজের নাম্বার অ্যাড (Manual)", callback_data="adm_add_manual")],
-        [InlineKeyboardButton("🔒 চ্যানেল লক এডিট করুন", callback_data="adm_edit_ch")],
-        [InlineKeyboardButton("📊 স্ট্যাটাস ও কানেক্টেড প্যানেল", callback_data="adm_status")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# /start কমান্ড
+# ==================== ৬. বটের কমান্ড হ্যান্ডলারসমূহ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    conn = sqlite3.connect('master_otp.db')
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, lang) VALUES (?, 'en')", (user_id,))
+    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    cursor.execute("INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)", (user_id,))
     conn.commit()
-    conn.close()
 
-    keyboard = [[InlineKeyboardButton("English 🇬🇧", callback_data="set_lang_en")], [InlineKeyboardButton("العربية 🇸🇦", callback_data="set_lang_ar")]]
-    await update.message.reply_text(STRINGS["en"]["welcome"], parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    if not await is_subscribed_all(user_id, context):
+        cursor.execute("SELECT key, value FROM settings WHERE key IN ('ch1_link', 'ch2_link', 'ch3_link')")
+        links = dict(cursor.fetchall())
+        keyboard = [
+            [InlineKeyboardButton("📢 1. Join Main Channel", url=links.get('ch1_link', '#'))],
+            [InlineKeyboardButton("🔄 2. Join Backup Channel", url=links.get('ch2_link', '#'))],
+            [InlineKeyboardButton("📱 3. Join OTP Group", url=links.get('ch3_link', '#'))],
+            [InlineKeyboardButton("✅ Check All Membership", callback_data="check_sub")]
+        ]
+        await update.message.reply_text("⚠️ **Access Denied!**\n\nবটটি ব্যবহার করতে আপনাকে অবশ্যই আমাদের নিচের ২টি চ্যানেল ও ওটিপি গ্রুপে জয়েন করতে হবে।", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
 
-# /admin কমান্ড
+    keyboard = [[InlineKeyboardButton("🇧🇩 বাংলা", callback_data="lang_bn"), InlineKeyboardButton("🇺🇸 English", callback_data="lang_en")]]
+    await update.message.reply_text("👋 Choose Your Language / ভাষা সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(keyboard))
+
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS: return
-    await update.message.reply_text("⚙️ *TBT Supreme Control Centre*\nনিচের অপশনগুলো দিয়ে ইউজার বট ও প্যানেল সেশন নিয়ন্ত্রণ করুন:", parse_mode="Markdown", reply_markup=get_admin_keyboard())
-
-# বাটন ক্লিক এবং ইন্টারফেস হ্যান্ডলার (ইউজার + অ্যাডমিন)
-async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
     user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS: return
+
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+
+    keyboard = [
+        [InlineKeyboardButton("📊 User Statistics", callback_data="view_user_stats")],
+        [InlineKeyboardButton("🧪 Advanced Demo OTP Panel", callback_data="setup_demo_otp")]
+    ]
+    msg_target = update.message if update.message else update.callback_query.message
+    await msg_target.reply_text(f"🛠️ **Welcome Admin!**\n\n📊 Total Active Users: {total_users}\n⚡ Control everything from below:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+# ==================== 🧪 ৭. অ্যাডভান্সড ডেমো ওটিপি সেটআপ ও বাটন হ্যান্ডলিং ====================
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
     await query.answer()
-
-    conn = sqlite3.connect('master_otp.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT lang FROM users WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    lang = row[0] if row else "en"
-
-    # --- ১. ইউজার ল্যাঙ্গুয়েজ ও চ্যানেল লক ইন্টারফেস ---
-    if query.data.startswith("set_lang_"):
-        lang = query.data.split("_")[2]
+    user_id = query.from_user.id
+    
+    if query.data == "check_sub":
+        if await is_subscribed_all(user_id, context):
+            await query.message.delete()
+            keyboard = [[InlineKeyboardButton("🇧🇩 বাংলা", callback_data="lang_bn"), InlineKeyboardButton("🇺🇸 English", callback_data="lang_en")]]
+            await context.bot.send_message(chat_id=query.message.chat_id, text="👋 Choose Your Language:", reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await query.message.reply_text("❌ আপনি এখনো সবগুলো চ্যানেল ও গ্রুপে জয়েন করেননি!")
+            
+    elif query.data in ["lang_bn", "lang_en"]:
+        lang = "bn" if query.data == "lang_bn" else "en"
         cursor.execute("UPDATE users SET lang=? WHERE user_id=?", (lang, user_id))
         conn.commit()
-        
-        if not await is_user_subscribed(context.bot, user_id):
-            channels = get_required_channels()
-            keyboard = []
-            for ch in channels:
-                keyboard.append([InlineKeyboardButton(f"Join {ch} ↗️", url=f"https://t.me/{ch.lstrip('@')}")])
-            keyboard.append([InlineKeyboardButton("✔️ I Have Joined", callback_data="u_check_join")])
-            await query.edit_message_text(STRINGS[lang]["lock"], parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        msg = "🎉 স্বাগতম!" if lang == "bn" else "🎉 Welcome!"
+        main_menu = [["📞 GET NUMBER", "💰 BALANCE"], ["👥 REFER & EARN", "📊 STATUS"]]
+        await context.bot.send_message(chat_id=query.message.chat_id, text=msg, reply_markup=ReplyKeyboardMarkup(main_menu, resize_keyboard=True))
+
+    elif query.data == "view_user_stats":
+        if user_id not in ADMIN_IDS: return
+        cursor.execute("SELECT user_id, total_numbers, total_otps FROM user_stats LIMIT 15")
+        rows = cursor.fetchall()
+        response_text = "📊 **User Statistics:**\n\n"
+        for row in rows:
+            response_text += f"👤 **User ID:** `{row[0]}`\n├ Ordered: {row[1]} | └ Success OTPs: {row[2]}\n\n"
+        back_btn = [[InlineKeyboardButton("⬅️ Back to Panel", callback_data="back_to_admin")]]
+        await query.message.edit_text(response_text, reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown")
+
+    elif query.data == "back_to_admin":
+        if user_id not in ADMIN_IDS: return
+        await query.message.delete()
+        await admin_panel(update, context)
+
+    elif query.data == "setup_demo_otp":
+        if user_id not in ADMIN_IDS: return
+        if user_id not in admin_demo_data:
+            admin_demo_data[user_id] = {"phone": "", "service": "", "otp": "", "country": "🌍 Country", "delay": 0}
+        await show_demo_settings_panel(query, user_id)
+
+    elif query.data.startswith("set_demo_"):
+        field = query.data.replace("set_demo_", "")
+        if field == "country":
+            keyboard = [
+                [InlineKeyboardButton("🇧🇩 Bangladesh", callback_data="select_country_🇧🇩 +880"), InlineKeyboardButton("🇮🇳 India", callback_data="select_country_🇮🇳 +91")],
+                [InlineKeyboardButton("🇺🇸 USA", callback_data="select_country_🇺🇸 +1"), InlineKeyboardButton("🇷🇺 Russia", callback_data="select_country_🇷🇺 +7")]
+            ]
+            await query.message.edit_text("🌍 সিলেক্ট করুন কোন দেশের নাম্বার:", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
-            await query.message.reply_text(STRINGS[lang]["joined_success"], reply_markup=get_main_keyboard(lang))
+            admin_demo_data[user_id]["current_editing"] = field
+            await query.message.reply_text(f"✏️ এখন চ্যাটে আপনার কাঙ্ক্ষিত **{field.upper()}** টাইপ করে পাঠান:")
 
-    elif query.data == "u_check_join":
-        if await is_user_subscribed(context.bot, user_id):
-            await query.message.reply_text(STRINGS[lang]["joined_success"], reply_markup=get_main_keyboard(lang))
-        else:
-            await context.bot.send_message(chat_id=user_id, text="❌ You haven't joined all channels yet!")
+    elif query.data.startswith("select_country_"):
+        c_str = query.data.replace("select_country_", "")
+        admin_demo_data[user_id]["country"] = c_str
+        await show_demo_settings_panel(query, user_id)
 
-    # --- ২. দেশের সার্ভিস এবং নাম্বার সিলেকশন (হুবহু স্ক্রিনশট ৩ ও ৪ এর মতো) ---
-    elif query.data.startswith("srv_"):
-        srv_type = query.data.split("_")[1] # e.g. egyptwa
-        # নিজের ম্যানুয়াল স্টক অথবা প্যানেল সেশন থেকে নাম্বার নিয়ে এসে সুন্দর বাটন বক্সে দেখাবে
-        cursor.execute("SELECT id, phone FROM manual_numbers WHERE service=? AND status='AVAILABLE' LIMIT 3", (srv_type,))
-        numbers = cursor.fetchall()
+    elif query.data == "run_demo_otp":
+        data = admin_demo_data.get(user_id)
+        if not data or not data["phone"] or not data["otp"]:
+            await query.message.reply_text("❌ সব তথ্য পূরণ করা হয়নি! দয়া করে সম্পূর্ণ করুন।")
+            return
         
-        keyboard = []
-        if numbers:
-            for num in numbers:
-                keyboard.append([InlineKeyboardButton(f"📋 🌍 {num[1]}", callback_data=f"getotp_{num[0]}")])
-        else:
-            # যদি নিজের ডাটাবেসে না থাকে, ডেমো হিসেবে বাটন শো করবে
-            keyboard.append([InlineKeyboardButton("📋 🇪🇬 +201109719973", callback_data="demo_otp")])
-            keyboard.append([InlineKeyboardButton("📋 🇪🇬 +201181920708", callback_data="demo_otp")])
+        await query.message.reply_text(f"🚀 ডেমো ওটিপি প্রসেসিং শুরু হয়েছে। {data['delay']} সেকেন্ড পর ওটিপি গ্রুপে রিসিভ হবে...")
+        asyncio.create_task(process_and_send_otp_to_group(context, data, user_id))
 
-        keyboard.append([InlineKeyboardButton("🔄 Change Number", callback_data="u_get_num_trigger")])
-        keyboard.append([InlineKeyboardButton("🌍 Change Country", callback_data="u_get_num_trigger")])
-        keyboard.append([InlineKeyboardButton("🔑 Get OTP ↗️", callback_data="demo_otp")])
-        
-        await query.edit_message_text("╔════════════════════════╗\n   📱 *TBT Number Bot* ☎️  `Admin` \n╚════════════════════════╝\n\n👇 *Available Numbers:*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+async def show_demo_settings_panel(query, user_id):
+    data = admin_demo_data[user_id]
+    text = (f"🧪 **Advanced Demo OTP Panel (Group Only)**\n\n"
+            f"📱 Phone Number: `{data['phone']}`\n"
+            f"🌍 Country Flag: `{data['country']}`\n"
+            f"⚙️ Service Name: `{data['service']}`\n"
+            f"🔑 OTP Code: `{data['otp']}`\n"
+            f"⏳ Delay/Timer: `{data['delay']} Seconds`\n\n"
+            f"👇 নিচের বাটনগুলোতে ক্লিক করে তথ্য পূরণ করুন:")
+    
+    keyboard = [
+        [InlineKeyboardButton("📱 Set Phone", callback_data="set_demo_phone"), InlineKeyboardButton("🌍 Set Country Flag", callback_data="set_demo_country")],
+        [InlineKeyboardButton("⚙️ Set Service", callback_data="set_demo_service"), InlineKeyboardButton("🔑 Set OTP Code", callback_data="set_demo_otp")],
+        [InlineKeyboardButton("⏳ Set Delay (Sec)", callback_data="set_demo_delay")],
+        [InlineKeyboardButton("🚀 RUN DEMO (গ্রুপে পাঠান)", callback_data="run_demo_otp")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin")]
+    ]
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    elif query.data == "u_get_num_trigger":
-        # স্ক্রিনশট ৩ এর মতো কান্ট্রি ও স্টক লিস্ট বাটন জেনারেট করা
-        keyboard = [
-            [InlineKeyboardButton("🇪🇬 Egypt Whatsapp (583)", callback_data="srv_egyptwa")],
-            [InlineKeyboardButton("🇹🇳 Tunisia Facebook (129)", callback_data="srv_tunisiafb")],
-            [InlineKeyboardButton("🇾🇪 Yemen Telegram (340)", callback_data="srv_yementg")]
-        ]
-        await query.edit_message_text(STRINGS[lang]["select_country"], parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    # --- ৩. অ্যাডমিন প্যানেল ব্যাকঅ্যান্ড একশনস ---
-    elif query.data == "adm_add_api":
-        admin_state[user_id] = "w_api"
-        await query.edit_message_text("👉 *ফরম্যাট:* `প্যানেল_নাম | API_URL | API_Token` লিখে পাঠান:")
-    elif query.data == "adm_add_login":
-        admin_state[user_id] = "w_login"
-        await query.edit_message_text("👉 *ফরম্যাট:* `প্যানেল_নাম | Login_URL | ইউজারনেম | পাসওয়ার্ড` লিখে পাঠান:")
-    elif query.data == "adm_add_manual":
-        admin_state[user_id] = "w_manual"
-        await query.edit_message_text("👉 *ফরম্যাট:* `নাম্বার | সার্ভিস | দেশ` লিখে পাঠান:\n(যেমন: `+201109719973 | egyptwa | Egypt`)")
-    elif query.data == "adm_edit_ch":
-        admin_state[user_id] = "w_ch"
-        await query.edit_message_text("👉 নতুন চ্যানেল লকগুলোর ইউজারনেম কমা (,) দিয়ে লিখে পাঠান:\n(যেমন: `@ch1, @ch2`)")
-    elif query.data == "adm_status":
-        cursor.execute("SELECT name, type FROM panels")
-        p_list = cursor.fetchall()
-        msg = "📊 *সিস্টেম স্ট্যাটাস:*\n\n"
-        msg += f"🔗 মোট কানেক্টেড প্যানেল: `{len(p_list)}` টি\n"
-        for p in p_list: msg += f" 🔹 {p[0]} ({p[1].upper()})\n"
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=get_admin_keyboard())
-
-    conn.close()
-
-# টেক্সট মেসেজ হ্যান্ডলার (কিবোর্ড বাটন প্রেস ও অ্যাডমিন ইনপুট ডেটা)
-async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_admin_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    text = update.message.text
-
-    conn = sqlite3.connect('master_otp.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT lang FROM users WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    lang = row[0] if row else "en"
-
-    # অ্যাডমিন স্টেট ডাটা ইনপুট প্রসেসিং
-    if user_id in ADMIN_IDS and user_id in admin_state:
-        state = admin_state[user_id]
-        
-        if state == "w_api":
-            try:
-                name, url, token = [i.strip() for i in text.split("|")]
-                cursor.execute("INSERT INTO panels (name, url, token, type) VALUES (?, ?, ?, 'api')", (name, url, token))
-                conn.commit()
-                await update.message.reply_text(f"✅ API প্যানেল `{name}` যুক্ত হয়েছে!", reply_markup=get_admin_keyboard())
-            except: await update.message.reply_text("❌ ফরম্যাট ভুল!")
-        
-        elif state == "w_login":
-            try:
-                name, url, user, pwd = [i.strip() for i in text.split("|")]
-                cursor.execute("INSERT INTO panels (name, url, username, password, type) VALUES (?, ?, ?, ?, 'login')", (name, url, user, pwd))
-                conn.commit()
-                await update.message.reply_text(f"✅ ID-Pass প্যানেল `{name}` যুক্ত হয়েছে! বট এখন স্বয়ংক্রিয়ভাবে সেশন লগইন করবে।", reply_markup=get_admin_keyboard())
-            except: await update.message.reply_text("❌ ফরম্যাট ভুল!")
-
-        elif state == "w_manual":
-            try:
-                phone, service, country = [i.strip() for i in text.split("|")]
-                cursor.execute("INSERT INTO manual_numbers (phone, service, country) VALUES (?, ?, ?)", (phone, service, country))
-                conn.commit()
-                await update.message.reply_text(f"✅ ম্যানুয়াল নাম্বার `{phone}` সফলভাবে আপনার বটের স্টকে যুক্ত হয়েছে!", reply_markup=get_admin_keyboard())
-            except: await update.message.reply_text("❌ ফরম্যাট ভুল!")
-
-        elif state == "w_ch":
-            cursor.execute("UPDATE settings SET value=? WHERE key='channels'", (text,))
-            conn.commit()
-            await update.message.reply_text("✅ ফোর্স সাবস্ক্রাইব চ্যানেলসমূহ আপডেট করা হয়েছে!", reply_markup=get_admin_keyboard())
-
-        del admin_state[user_id]
-        conn.close()
-        return
-
-    # ইউজার বাটন ক্লিক রেসপন্স
-    if not await is_user_subscribed(context.bot, user_id):
-        await update.message.reply_text("❌ Access Denied! Please join channels first.")
-        conn.close()
-        return
-
-    if text in [STRINGS["en"]["kb_get_num"], STRINGS["ar"]["kb_get_num"]]:
-        keyboard = [
-            [InlineKeyboardButton("🇪🇬 Egypt Whatsapp (583)", callback_data="srv_egyptwa")],
-            [InlineKeyboardButton("🇹🇳 Tunisia Facebook (129)", callback_data="srv_tunisiafb")],
-            [InlineKeyboardButton("🇺🇸 USA Telegram (892)", callback_data="srv_usatg")]
-        ]
-        await update.message.reply_text(STRINGS[lang]["select_country"], parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    if user_id not in ADMIN_IDS or user_id not in admin_demo_data: return
     
-    elif text in [STRINGS["en"]["kb_active"], STRINGS["ar"]["kb_active"]]:
-        await update.message.reply_text(STRINGS[lang]["active_num"])
+    field = admin_demo_data[user_id].get("current_editing")
+    if not field: return
     
-    elif text in [STRINGS["en"]["kb_lang"], STRINGS["ar"]["kb_lang"]]:
-        keyboard = [[InlineKeyboardButton("English 🇬🇧", callback_data="set_lang_en")], [InlineKeyboardButton("العربية 🇸🇦", callback_data="set_lang_ar")]]
-        await update.message.reply_text(STRINGS["en"]["welcome"], parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    text_input = update.message.text
+    if field == "delay":
+        try: admin_demo_data[user_id][field] = int(text_input)
+        except: await update.message.reply_text("❌ শুধুমাত্র সংখ্যা ইনপুট দিন!")
+    else:
+        admin_demo_data[user_id][field] = text_input
+        
+    admin_demo_data[user_id]["current_editing"] = None
+    
+    keyboard = [[InlineKeyboardButton("🔄 Refresh Panel", callback_data="setup_demo_otp")]]
+    await update.message.reply_text("✅ ডাটা সেভ হয়েছে। প্যানেল রিফ্রেশ করুন:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    conn.close()
+# ==================== ⏳ ৮ম ধাপ: শুধুমাত্র ওটিপি গ্রুপে মেসেজ পাঠানো ====================
+async def process_and_send_otp_to_group(context, data, admin_id):
+    if data["delay"] > 0:
+        await asyncio.sleep(data["delay"])
+        
+    header = get_service_header(data["service"])
+    masked_phone = mask_number(data["phone"], data["country"])
+    
+    group_message = (f"📢 **LIVE OTP PROOF** 📢\n\n"
+                     f"{header}\n\n"
+                     f"📱 **Number:** `{masked_phone}`\n"
+                     f"🔑 **OTP Code:** `{data['otp']}`\n\n"
+                     f"⏳ *বটের ভেতর ওটিপিটি সফলভাবে রিসিভ হয়েছে!*")
+    
+    cursor.execute("SELECT value FROM settings WHERE key='otp_share_group'")
+    group_res = cursor.fetchone()
+    if group_res and group_res[0]:
+        try:
+            # চ্যাট আইডি সরাসরি ইন্টিজারে কনভার্ট করে গ্রুপে পাঠানো হচ্ছে
+            await context.bot.send_message(chat_id=int(group_res[0]), text=group_message, parse_mode="Markdown")
+            await context.bot.send_message(chat_id=admin_id, text="✅ সফল হয়েছে! ডেমো ওটিপিটি ওটিপি গ্রুপে পোস্ট করা হয়েছে।")
+        except Exception as e:
+            await context.bot.send_message(chat_id=admin_id, text=f"❌ গ্রুপে পাঠানো যায়নি। বটকে গ্রুপে অ্যাডমিন করেছেন তো? এরর: {e}")
 
+# ==================== ৯. মেইন অ্যাপ্লিকেশন রান ====================
 def main():
-    Thread(target=run_server).start()
-    application = Application.builder().token(BOT_TOKEN).build()
+    keep_alive()
+    app_bot = Application.builder().token(BOT_TOKEN).build()
     
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("admin", admin_panel))
-    application.add_handler(CallbackQueryHandler(handle_callbacks))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("admin", admin_panel))
+    app_bot.add_handler(CallbackQueryHandler(button_click))
+    app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_inputs))
     
-    print("Supreme Bot Loaded Successfully...")
-    application.run_polling()
+    print("🤖 All Fixed! Group-Only Demo Mode OTP Bot is Live!")
+    app_bot.run_polling()
 
 if __name__ == '__main__':
     main()
