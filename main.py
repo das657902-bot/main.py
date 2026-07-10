@@ -25,7 +25,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 # ==================== ২. বটের মূল কনফিগারেশন ====================
 BOT_TOKEN = "8517425191:AAEMDKiXmmCbVZYng76YkCQ5vR7Ncy9"  # আপনার বটের টোকেন
-ADMIN_IDS = [805127634]  # আপনার টেলিগ্রাম আইডি
+ADMIN_IDS = [8051276654]  # আপনার টেলিগ্রাম আইডি
 
 # ==================== ৩. ডাটাবেজ সেটআপ ====================
 conn = sqlite3.connect('master_otp.db', check_same_thread=False)
